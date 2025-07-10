@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 const certificateSchema = new mongoose.Schema({
   commonName: String,
   csr: String,
+  certificate: String,
   issueDate: { type: Date, default: Date.now },
   expDate: Date,
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

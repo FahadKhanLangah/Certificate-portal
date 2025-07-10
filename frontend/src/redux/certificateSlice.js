@@ -2,14 +2,19 @@ import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import axios from 'axios';
 
 const API_URL = 'http://localhost:5000';
+
 export const submitCSR = createAsyncThunk(
   'certificate/submitCSR',
   async ({ csrContent, commonName }) => {
-    const { data } = await axios.post(`${API_URL}/api/certificates/submit-csr`, {
-      csrContent,
-      commonName,
-    });
-    return data;
+    try {
+      const { data } = await axios.post(`${API_URL}/api/certificates/submit-csr`, {
+        csrContent,
+        commonName,
+      });
+      return data;
+    } catch (error) {
+      return console.log(error.res)
+    }
   }
 );
 

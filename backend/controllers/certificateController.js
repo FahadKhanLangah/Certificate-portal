@@ -2,103 +2,109 @@ import Certificate from '../models/Certificate.js';
 import { issueCertificateFromCSR } from '../utils/stepCommands.js';
 import path from 'path';
 import fs from 'fs';
-import { execFileSync } from 'child_process';
 import AddAuditLogs from '../utils/AuditLog.js';
 import { sendEmail } from '../utils/email.js';
 import { issuedTemplate, renewedTemplate, revokedTemplate } from '../utils/emailTemplates.js';
-//8d235be2ab09d3dc96426a569443cb92b6fa6756c89619efb4bf3e2f9a921d3d
-export const requestCertificate = async (req, res) => {
-  try {
-    const { commonName } = req.body;
-
-    // if (!commonName) {
-    //   return res.status(400).json({ message: 'Common name is required' });
-    // }
-
-    // ✅ Use absolute path to the external step-ca directory
-    // const stepCaBase = path.join(process.cwd(), '..', 'step-ca'); // outside backend/
-    // const certsDir = path.join(stepCaBase, 'certs');
-
-    // const crtFile = path.join(certsDir, `${commonName}.crt`);
-    // const keyFile = path.join(certsDir, `${commonName}.key`);
-    // const passwordFile = path.join(stepCaBase, 'password.txt');
-    // const rootCert = path.join(certsDir, 'root_ca.crt');
-    // const caURL = 'https://localhost:9000';
-
-    // const args = [
-    //   'certificate', 'create',
-    //   commonName,
-    //   crtFile,
-    //   keyFile,
-    //   '--provisioner', 'fahadkhanavoid@gmail.com',
-    //   '--password-file', passwordFile,
-    //   '--ca', caURL,
-    //   '--root', rootCert,
-    //   '--insecure',
-    // ];
-
-    // console.log('Running step command:', args.join(' '));
-
-    // ✅ No shell parsing needed — best practice
-    // execFileSync('step', args, {
-    //   stdio: 'inherit',
-    // });
-
-    // Save to MongoDB
-    await Certificate.create({
-      commonName,
-      user: req.user._id,
-      status: 'active',
-      certPath: crtFile,
-      keyPath: keyFile,
-    });
-
-    return res.status(201).json({
-      success: true,
-      message: 'Certificate issued successfully'
-    });
-  } catch (err) {
-    console.error('Step CA Error:', err.message);
-    res.status(500).json({
-      message: 'Certificate issuance failed',
-      error: err.message,
-    });
-  }
-};
+import { exec } from 'child_process';
+import { v4 as uuidv4 } from 'uuid';
 
 export const submitCSR = async (req, res) => {
   try {
     const { csrContent, commonName } = req.body;
     if (!req.user) {
-      return res.status(400).json({ message: 'No user found please login first' });
+      return res.status(401).json({ message: 'No user found, please login first' });
     }
-    if (!csrContent) return res.status(400).json({ message: 'CSR content is required' });
 
-    // const { cert, key } = await issueCertificateFromCSR(commonName, csrContent);
+    if (!csrContent || !commonName) {
+      return res.status(400).json({ message: 'Common Name and CSR content are required' });
+    }
 
-    const newCert = new Certificate({
-      commonName,
-      csr: csrContent,
-      expDate: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000),
-      user: req.user.id
-    });
+    //Save CSR temporarily to disk
+    const id = uuidv4();
+    const tmpDir = path.join('tmp');
+    const csrPath = path.join(tmpDir, `${id}.csr`);
+    const certPath = path.join(tmpDir, `${id}.crt`);
 
-    await newCert.save();
-    await sendEmail({
-      to: req.user.email,
-      subject: 'Welcome to Certificate Panel',
-      html: issuedTemplate(req.user.name, commonName)
-    });
+    // Looking for if temporary folder exists if does not exist it will create a new one
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir);
+    fs.writeFileSync(csrPath, csrContent);
 
-    return res.status(201).json({
-      success: true,
-      message: 'Certificate issued',
+    // Run step CLI to sign the CSR by provisioner
+    // This is provisioner password file location C:\step-ca\provisioner-password.txt
+    const passwordFile = 'C:/step-ca/provisioner-password.txt'; // Here you can gave your own path
+    const command = `step ca sign "${csrPath}" "${certPath}" --not-after=24h --password-file "${passwordFile}"`;
+
+    exec(command, async (err, stdout, stderr) => {
+      if (err) {
+        console.error('Step CA Sign Error:', stderr);
+        return res.status(500).json({ message: 'CSR signing failed', error: stderr });
+      }
+
+      // Read the signed certificate
+      const signedCert = fs.readFileSync(certPath, 'utf-8');
+
+
+      // Store certificate metadata in MongoDB
+      const newCert = new Certificate({
+        commonName,
+        csr: csrContent,
+        expDate: new Date(Date.now() + 1 * 24 * 60 * 60 * 1000), // 10 days from now
+        user: req.user.id,
+        status: 'issued',
+        certificate: signedCert,
+      });
+
+      await newCert.save();
+
+      // Email notification
+      await sendEmail({
+        to: req.user.email,
+        subject: 'Certificate Issued ✔',
+        html: issuedTemplate(req.user.name, commonName),
+      });
+
+      // Clean up temp files
+      fs.unlinkSync(csrPath);
+      fs.unlinkSync(certPath);
+      return res.status(201).json({
+        success: true,
+        message: 'Certificate issued successfully',
+        certificate: signedCert,
+      });
     });
   } catch (error) {
-    console.error(error);
+    console.error('submitCSR error:', error);
     res.status(500).json({ message: 'Certificate issuance failed', error: error.message });
   }
 };
+
+export const downloadCertificate = async (req, res) => {
+  try {
+    const cert = await Certificate.findById(req.params.id);
+    if (!cert || cert.status === 'revoked') {
+      return res.status(400).json({ message: 'Invalid certificate' });
+    }
+
+    if (!cert.certificate) {
+      return res.status(404).json({ message: 'Certificate not available for download' });
+    }
+
+    const fileName = `${cert.commonName}.crt`;
+    const dirPath = path.join(process.cwd(), 'tmp');
+    const filePath = path.join(dirPath, fileName);
+
+    if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath);
+    fs.writeFileSync(filePath, cert.certificate);
+
+    return res.download(filePath, fileName, () => {
+      fs.unlinkSync(filePath); // clean up after sending
+    });
+  } catch (err) {
+    console.error('Download error:', err);
+    res.status(500).json({ message: 'Download failed', error: err.message });
+  }
+};
+
 
 export const getCertificates = async (req, res) => {
   try {
@@ -164,17 +170,66 @@ export const revokeCertificate = async (req, res) => {
   }
 };
 
-export const downloadCertificate = async (req, res) => {
+
+
+
+
+
+export const requestCertificate = async (req, res) => {
   try {
-    const cert = await Certificate.findById(req.params.id);
-    if (!cert || cert.status === 'revoked') return res.status(400).json({ message: 'Invalid certificate' });
+    const { commonName } = req.body;
 
-    const filePath = path.join(process.cwd(), 'step-ca', 'certs', `${cert.commonName}.crt`);
-    if (!fs.existsSync(filePath)) return res.status(404).json({ message: 'Certificate file not found' });
+    // if (!commonName) {
+    //   return res.status(400).json({ message: 'Common name is required' });
+    // }
 
-    res.download(filePath);
+    // ✅ Use absolute path to the external step-ca directory
+    // const stepCaBase = path.join(process.cwd(), '..', 'step-ca'); // outside backend/
+    // const certsDir = path.join(stepCaBase, 'certs');
+
+    // const crtFile = path.join(certsDir, `${commonName}.crt`);
+    // const keyFile = path.join(certsDir, `${commonName}.key`);
+    // const passwordFile = path.join(stepCaBase, 'password.txt');
+    // const rootCert = path.join(certsDir, 'root_ca.crt');
+    // const caURL = 'https://localhost:9000';
+
+    // const args = [
+    //   'certificate', 'create',
+    //   commonName,
+    //   crtFile,
+    //   keyFile,
+    //   '--provisioner', 'fahadkhanavoid@gmail.com',
+    //   '--password-file', passwordFile,
+    //   '--ca', caURL,
+    //   '--root', rootCert,
+    //   '--insecure',
+    // ];
+
+    // console.log('Running step command:', args.join(' '));
+
+    // ✅ No shell parsing needed — best practice
+    // execFileSync('step', args, {
+    //   stdio: 'inherit',
+    // });
+
+    // Save to MongoDB
+    await Certificate.create({
+      commonName,
+      user: req.user._id,
+      status: 'active',
+      certPath: crtFile,
+      keyPath: keyFile,
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: 'Certificate issued successfully'
+    });
   } catch (err) {
-    res.status(500).json({ message: 'Download failed', error: err.message });
+    console.error('Step CA Error:', err.message);
+    res.status(500).json({
+      message: 'Certificate issuance failed',
+      error: err.message,
+    });
   }
 };
-

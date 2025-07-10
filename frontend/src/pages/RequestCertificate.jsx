@@ -2,25 +2,39 @@ import { useEffect, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { submitCSR } from '../redux/certificateSlice';
 import { toast } from 'react-toastify';
+import { generateCSR } from '../utils/generateCSR';
 
 const RequestCertificate = () => {
   const dispatch = useDispatch();
   const [commonName, setCommonName] = useState('');
-  const [csrContent, setCSRcontent] = useState('');
   const { loading, error, message } = useSelector(state => state.certificate);
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
+const handleGenerateAndSubmit = async (e) => {
+  e.preventDefault();
 
-    if (!commonName.trim() || !csrContent.trim()) {
-      toast.error('Please fill all fields');
-      return;
-    }
+  if (!commonName.trim()) {
+    toast.error('Please enter Common Name');
+    return;
+  }
 
-    dispatch(submitCSR({ commonName, csrContent }));
+  try {
+    const { pemCsr, pemKey } = await generateCSR(commonName);
+
+    // Optional: download private key locally
+    // const blob = new Blob([pemKey], { type: 'text/plain' });
+    // const a = document.createElement('a');
+    // a.href = URL.createObjectURL(blob);
+    // a.download = `${commonName}-private.key`;
+    // a.click();
+
+    dispatch(submitCSR({ commonName, csrContent: pemCsr }));
+
     setCommonName('');
-    setCSRcontent('');
-  };
+  } catch (error) {
+    console.error(error);
+    toast.error('CSR generation failed');
+  }
+};
   useEffect(() => {
     if (error) toast.error(error);
     if (message) toast.info(message);
@@ -39,7 +53,7 @@ const RequestCertificate = () => {
           <p className="mt-1 text-indigo-100">Submit your certificate signing request for processing</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-6">
+        <form onSubmit={handleGenerateAndSubmit} className="p-6 space-y-6">
           <div>
             <label htmlFor="commonName" className="block text-sm font-medium text-gray-700 mb-1">
               Common Name
@@ -55,22 +69,6 @@ const RequestCertificate = () => {
             />
             <p className="mt-1 text-sm text-gray-500">The fully qualified domain name (FQDN) for your certificate</p>
           </div>
-
-          <div>
-            <label htmlFor="csrContent" className="block text-sm font-medium text-gray-700 mb-1">
-              CSR Content
-            </label>
-            <textarea
-              id="csrContent"
-              placeholder="-----BEGIN CERTIFICATE REQUEST-----\n...\n-----END CERTIFICATE REQUEST-----"
-              value={csrContent}
-              onChange={(e) => setCSRcontent(e.target.value)}
-              required
-              className="w-full min-h-40 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition font-mono text-sm"
-            />
-            <p className="mt-1 text-sm text-gray-500">Paste your complete Certificate Signing Request (CSR)</p>
-          </div>
-
           <div className="flex items-center">
             <button
               disabled={loading}
@@ -94,7 +92,6 @@ const RequestCertificate = () => {
                 </>
               )}
             </button>
-
             <button
               type="button"
               onClick={() => {
