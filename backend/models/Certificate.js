@@ -4,6 +4,7 @@ const certificateSchema = new mongoose.Schema({
   commonName: String,
   csr: String,
   certificate: String,
+  serialNumber: String,
   issueDate: { type: Date, default: Date.now },
   expDate: Date,
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

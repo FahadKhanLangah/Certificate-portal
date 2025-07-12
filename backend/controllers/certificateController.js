@@ -42,26 +42,23 @@ export const submitCSR = async (req, res) => {
 
       // Read the signed certificate
       const signedCert = fs.readFileSync(certPath, 'utf-8');
-
-
       // Store certificate metadata in MongoDB
       const newCert = new Certificate({
         commonName,
         csr: csrContent,
-        expDate: new Date(Date.now() + 1 * 24 * 60 * 60 * 1000), // 10 days from now
+        expDate: new Date(Date.now() + 1 * 24 * 60 * 60 * 1000), // 1 day from now
         user: req.user.id,
         status: 'issued',
         certificate: signedCert,
       });
-
       await newCert.save();
 
       // Email notification
-      await sendEmail({
-        to: req.user.email,
-        subject: 'Certificate Issued ✔',
-        html: issuedTemplate(req.user.name, commonName),
-      });
+      // await sendEmail({
+      //   to: req.user.email,
+      //   subject: 'Certificate Issued ✔',
+      //   html: issuedTemplate(req.user.name, commonName),
+      // });
 
       // Clean up temp files
       fs.unlinkSync(csrPath);
@@ -97,14 +94,13 @@ export const downloadCertificate = async (req, res) => {
     fs.writeFileSync(filePath, cert.certificate);
 
     return res.download(filePath, fileName, () => {
-      fs.unlinkSync(filePath); // clean up after sending
+      fs.unlinkSync(filePath);
     });
   } catch (err) {
     console.error('Download error:', err);
     res.status(500).json({ message: 'Download failed', error: err.message });
   }
 };
-
 
 export const getCertificates = async (req, res) => {
   try {
@@ -131,11 +127,11 @@ export const renewCertificate = async (req, res) => {
     cert.status = 'renewed';
     cert.expDate = new Date(Date.now() + 15 * 24 * 60 * 60 * 1000),
       await cert.save();
-    await sendEmail({
-      to: user.email,
-      subject: 'Welcome to Certificate Panel',
-      html: renewedTemplate(user.name, cert.commonName)
-    });
+    // await sendEmail({
+    //   to: user.email,
+    //   subject: 'Welcome to Certificate Panel',
+    //   html: renewedTemplate(user.name, cert.commonName)
+    // });
 
     res.json({ message: 'Certificate renewed successfully' });
   } catch (err) {
@@ -151,17 +147,23 @@ export const revokeCertificate = async (req, res) => {
     });
     const user = cert.user;
     if (!cert || cert.status === 'revoked') return res.status(400).json({ message: 'Invalid certificate' });
+    // const passwordFile = 'C:/step-ca/provisioner-password.txt';
+    // const cmd = `step ca revoke --serial ${cert.serialNumber} --ca-url https://localhost:9000 --root "${process.env.HOME || process.env.USERPROFILE}\\.step\\certs\\root_ca.crt" --password-file ${passwordFile}`;
 
+    // exec(cmd, (error, stdout, stderr) => {
+    //   if (error) {
+    //     console.error(`Revoke error: ${stderr}`);
+    //     return res.status(500).json({ message: 'Step CA revoke failed', error: stderr });
+    //   }
+    // })
     cert.status = 'revoked';
     await cert.save();
 
-    // Optionally call step CLI:
-    // child_process.exec(`step ca revoke ${cert.serialNumber}`, { env: { ...process.env } })
-    await sendEmail({
-      to: user.email,
-      subject: 'Welcome to Certificate Panel',
-      html: revokedTemplate(user.name, cert.commonName)
-    });
+    // await sendEmail({
+    //   to: user.email,
+    //   subject: 'Welcome to Certificate Panel',
+    //   html: revokedTemplate(user.name, cert.commonName)
+    // });
     return res.json({
       success: true, message: 'Certificate revoked successfully'
     });
